@@ -156,6 +156,46 @@ ggplot(stock_df, aes(x = date, y = rolling_volatility_20)) +
   )
 ```
 
+1.  **Distribution of Daily Returns (Testing Loss Aversion)**
+    This analysis evaluates the distribution profile of daily log returns to mathematically verify the presence of investor Loss Aversion.
+
+    Key Statistical Findings:
+    • Daily Returns Skewness: -1.1499
+    • Distribution Category: Highly skewed to the left
+    • Statistical Significance: High (Score is well below Behavioral Interpretation:-1.0)
+    • Asymmetric Investor Behavior: Market panics are sharper than rallies.
+    • Elongated Left Tail: Extreme single-day market drops happen fast.
+    • Truncated Right Tail: Positive market gains are slow and orderly.
+    • Model Requirement: Standard linear models fail due to this asymmetry
+
+2.  **Volatility Autocorrelation Function (ACF) – Testing Panic Clustering**
+    This analysis examines the Autocorrelation Function (ACF) applied to the absolute values of daily log returns to mathematically evaluate the presence of Panic Clustering (Volatility Clustering).
+
+    Key Statistical Findings:
+    • Immediate Correlation (Lag 1): \~0.50 (highly positive and statistically significant).
+    • Persistence Horizon: Vertical bars remain structurally elevated above the blue
+    significance threshold for exactly 27 trading days.
+    • Statistical Significance: High. The extension of the bars beyond the 95% confidence interval (blue-shaded region) up to Lag 27 proves this pattern is a core structural feature.
+
+    Behavioral & Structural Interpretation:
+    • Volatility Clustering Verified: Large price shocks tend to be followed by large price shocks, and calm periods tend to be followed by calm periods.
+    • The 27-Day Market Echo: A severe market panic leaves a lingering "echo" of institutional re-hedging and investor anxiety that takes exactly 5 weeks and 2 days to fully dissipate.
+    • Feature Engineering Justification: This heavy serial dependence mathematically
+    validates the inclusion of explicit historical features such as return_lag_1, return_lag_2, and short-term rolling volatility metrics (rolling_std_5) into our machine learning matrix.
+
+3.  **20-Day Rolling Volatility - Testing Structural Breaks**
+    This analysis evaluates a 20-day rolling standard deviation timeline applied to our stationary daily log returns to identify major macro shocks and Structural Breaks (Regime Shifts).
+
+    Key Statistical Findings:
+    • Historical Baseline (2016–2019): Volatility remained tightly bound within a low variance regime between \~0.005 and 0.015.
+    • The COVID-19 Shock Event (Early 2020): Driven by global pandemic panic, risk spiked vertically to a historic peak of 0.061—representing a massive 6x increase over the historical baseline average.
+    • The Clustering Tail: The slow, non-vertical trailing decay following the main COVID-19 panic wave visually maps our verified 27-day autocorrelation aftershock wave.
+
+    Structural Interpretation & Algorithmic Impact:
+    • Regime Shift Verified: The massive 2020 COVID-19 spike marks a definitive structural break in the time series. The market state transitioned instantly from a quiet baseline into a high-variance crisis regime.
+    • Why Traditional Models Fail Here: Classical models (like standard OLS frameworks) cannot handle this sudden variance explosion. They assume variance is constant (Homoscedasticity), which this graph completely disproves.
+    • Non-Linear Tree Architecture Advantage: Non-linear algorithms (like LightGBM) can utilize these structural spikes as an environmental warning system to dynamically scale predictions across disparate variance boundaries.
+
 ```{r}
 # ------------------------------------------------------------------------------
 # Step 4: Extended Feature Engineering (Modelling Setup)
