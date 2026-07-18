@@ -10,7 +10,7 @@ output: html_document
 This end-to-end framework implements structured time-series data cleaning, feature engineering, and a machine learning tournament to predict daily log returns.
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, eval = TRUE)
+knitr::opts_chunk$set(echo = FALSE, eval = TRUE)
 ```
 
 ## Machine Learning Production Code
