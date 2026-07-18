@@ -1,0 +1,395 @@
+---
+title: "Yahoo Stock Price Prediction Pipeline"
+author: "John Njuguna"
+date: "2026-07-18"
+output: html_document
+---
+
+## Executive Summary
+
+This end-to-end framework implements structured time-series data cleaning, feature engineering, and a machine learning tournament to predict daily log returns.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, eval = TRUE)
+```
+
+## Machine Learning Production Code
+
+```{r}
+         
+# ==============================================================================
+# Yahoo Stock Price Prediction Pipeline (R Translation)
+# ==============================================================================
+
+# Load necessary libraries
+library(tidyverse)    # For data manipulation (dplyr, stringr, readr) and plotting (ggplot2)
+library(changepoint)  # For PELT structural break analysis
+library(lightgbm)     # For LightGBM Regressor
+library(xgboost)      # For XGBoost Regressor
+library(randomForest) # For Random Forest
+library(e1071)        # For Support Vector Regression (SVR)
+library(glmnet)       # For Ridge Regression
+library(TTR)          # For RSI calculation helper
+library(ggplot2)
+
+# Load raw dataset
+stock_df <- read_csv("data/raw/yahoo_stock.csv")
+```
+
+```{r}
+# ------------------------------------------------------------------------------
+# Step 1: Data Cleaning
+# ------------------------------------------------------------------------------
+
+# Convert Date column from text string to true Date object
+stock_df <- stock_df %>% mutate(Date = as.Date(Date))
+
+# Convert all column names to lowercase and swap spaces for underscores
+colnames(stock_df) <- colnames(stock_df) %>% 
+  str_trim() %>% 
+  str_to_lower() %>% 
+  str_replace_all(" ", "_")
+
+# Sort chronologically by date
+stock_df <- stock_df %>% arrange(date)
+
+# Filter out weekend rows (Saturday = 6, Sunday = 7 in R's wday; or check weekday format)
+# Using POSIXlt format where 0-6 represents Sunday-Saturday:
+stock_df <- stock_df %>% 
+  filter(!(as.POSIXlt(date)$wday %in% c(0, 6)))
+
+# Summary Data Quality Report Function
+data_quality_report <- function(df) {
+  cat("Missing Values:\n")
+  print(colSums(is.na(df)))
+  cat("\nData Types:\n")
+  print(sapply(df, class))
+  cat("\nDuplicate Rows:\n")
+  print(sum(duplicated(df$date)))
+  cat("\nSummary Stats:\n")
+  print(summary(df))
+}
+
+data_quality_report(stock_df)
+
+# Outlier Management using 20-day rolling Z-score
+# R matrix operations handle windows cleanly via slider or custom roll-apply functions
+roll_mean_20 <- zoo::rollapplyr(stock_df$adj_close, width = 20, FUN = mean, fill = NA)
+roll_std_20  <- zoo::rollapplyr(stock_df$adj_close, width = 20, FUN = sd, fill = NA)
+
+z_scores <- (stock_df$adj_close - roll_mean_20) / roll_std_20
+cat("Detected", sum(abs(z_scores) > 3, na.rm = TRUE), "localized outliers.\n")
+
+# Define bounds and clip extreme values
+upper_bound <- roll_mean_20 + (3 * roll_std_20)
+lower_bound <- roll_mean_20 - (3 * roll_std_20)
+
+stock_df$adj_close <- pmax(pmin(stock_df$adj_close, upper_bound), lower_bound)
+```
+
+```{r}
+# ------------------------------------------------------------------------------
+# Step 2 & 3: Feature Engineering & EDA
+# ------------------------------------------------------------------------------
+
+# Shifts and computes mathematical stationary fields
+stock_df <- stock_df %>% 
+  mutate(
+    prev_close = lag(adj_close, 1),
+    daily_return = log(adj_close / prev_close),
+    daily_range = high - low
+  ) %>% 
+  drop_na() # Drops rows containing initial NaNs
+
+# Skewness validation
+returns_skew <- e1071::skewness(stock_df$daily_return)
+cat(sprintf("Daily Returns Skewness: %.4f\n", returns_skew))
+
+# Visualizing Log Return Distribution (Testing Loss Aversion)
+ggplot(stock_df, aes(x = daily_return)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 100, fill = "#DC143C", alpha = 0.7) +
+  geom_density(color = "darkred", linewidth = 1) +
+  geom_vline(xintercept = mean(stock_df$daily_return, na.rm = TRUE), color = "black", linetype = "dashed", linewidth = 1) +
+  labs(title = "Daily Returns Distribution Profile (Testing Loss Aversion Loss Tails)",
+       x = "Log Return Value", y = "Frequency (Days)") +
+  theme_minimal()
+
+# Volatility Autocorrelation (ACF) - Testing Panic Clustering
+acf(abs(stock_df$daily_return), lag.max = 40, main = "Volatility Autocorrelation (Testing Panic Clustering Waves)")
+
+# Compute rolling structural break variables
+stock_df$rolling_volatility_20 <- zoo::rollapplyr(stock_df$daily_return, width = 20, FUN = sd, fill = NA)
+
+# Structural Breaks detection via PELT algorithm
+signal <- stock_df$daily_return
+pelt_model <- cpt.meanvar(signal, method = "PELT", penalty = "Manual", pen.value = 5, test.stat = "Normal")
+break_indices <- cpts(pelt_model)
+break_dates <- stock_df$date[break_indices]
+
+for(b_date in break_dates) {
+  cat(sprintf("Structural Break Located: %s\n", as.Date(b_date, origin = "1970-01-01")))
+}
+
+# Behavioral Context Correlation Heatmap
+stock_df <- stock_df %>% 
+  mutate(
+    return_lag_1 = lag(daily_return, 1),
+    volume_lag_1 = lag(volume, 1)
+  )
+
+behavioral_cols <- c('daily_return', 'return_lag_1', 'daily_range', 'volume', 'volume_lag_1')
+corr_matrix <- cor(stock_df %>% select(all_of(behavioral_cols)), use = "complete.obs")
+print(round(corr_matrix, 2))
+
+# Generate a clean line plot tracing out rolling metric shifts
+ggplot(stock_df, aes(x = date, y = rolling_volatility_20)) +
+  geom_line(color = "darkorange", linewidth = 0.8) +
+  labs(
+    title = "Market Volatility Over Time (Scanning for Structural Breaks / Crisis Shifts)",
+    x = "Date Timeline",
+    y = "Standard Deviation (Risk)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 11),
+    legend.position = "top"
+  )
+```
+
+```{r}
+# ------------------------------------------------------------------------------
+# Step 4: Extended Feature Engineering (Modelling Setup)
+# ------------------------------------------------------------------------------
+
+stock_df_expanded <- stock_df %>% 
+  mutate(
+    return_lag_2 = lag(daily_return, 2),
+    return_lag_3 = lag(daily_return, 3),
+    return_lag_4 = lag(daily_return, 4),
+    return_lag_5 = lag(daily_return, 5),
+    volume_lag_2 = lag(volume, 2),
+    daily_range_lag_1 = lag(daily_return, 1), # Assigned matching python variable
+    daily_range_lag_2 = lag(daily_range, 2),
+    
+    # Risk Tracking windows
+    rolling_volatility_5  = zoo::rollapplyr(daily_return, width = 5, FUN = sd, fill = NA),
+    rolling_volatility_60 = zoo::rollapplyr(daily_return, width = 60, FUN = sd, fill = NA)
+  )
+
+# RSI 14-day calculation from returns
+# Using TTR package's standard implementation matching python logic structure
+stock_df_expanded$rsi_14 <- RSI(stock_df_expanded$adj_close, n = 14)
+stock_df_expanded$rsi_14_lag_1 <- lag(stock_df_expanded$rsi_14, 1)
+
+# Clear matrix of nested Lookback NaN artifacts
+stock_df_expanded <- stock_df_expanded %>% drop_na()
+```
+
+```{r}
+# ------------------------------------------------------------------------------
+# Step 5: Train, Test, Split
+# ------------------------------------------------------------------------------
+
+expanded_features <- c(
+  'return_lag_1', 'return_lag_2', 'return_lag_3', 'return_lag_4', 'return_lag_5',
+  'volume_lag_1', 'volume_lag_2',
+  'daily_range_lag_1', 'daily_range_lag_2',
+  'rolling_volatility_5', 'rolling_volatility_20', 'rolling_volatility_60',
+  'rsi_14_lag_1'
+)
+
+X <- stock_df_expanded %>% select(all_of(expanded_features))
+y <- stock_df_expanded$daily_return
+
+test_size <- 30
+split_idx <- nrow(stock_df_expanded) - test_size
+
+# Split matrices
+X_train <- X[1:split_idx, ]
+y_train <- y[1:split_idx]
+X_test  <- X[(split_idx + 1):nrow(X), ]
+y_test  <- y[(split_idx + 1):length(y)]
+```
+
+```{r}
+# ------------------------------------------------------------------------------
+# Step 6: Scaling
+# ------------------------------------------------------------------------------
+
+# Custom MinMax Scaling mapping to prevent leakages
+mins <- apply(X_train, 2, min)
+maxs <- apply(X_train, 2, max)
+
+X_train_scaled <- as.matrix(scale(X_train, center = mins, scale = maxs - mins))
+X_test_scaled  <- as.matrix(scale(X_test, center = mins, scale = maxs - mins))
+```
+
+```{r}
+# ------------------------------------------------------------------------------
+# Step 7: Modeling & Evaluation (Stable Production Matrix)
+# ------------------------------------------------------------------------------
+
+# Metrics Calculation helper function
+calculate_metrics <- function(actual, predicted) {
+  rmse <- sqrt(mean((actual - predicted)^2)) * 100
+  mae  <- mean(abs(actual - predicted)) * 100
+  return(c(RMSE = rmse, MAE = mae))
+}
+
+# Model A: Linear Ridge Regression
+model_ridge <- glmnet::glmnet(X_train_scaled, y_train, alpha = 0, lambda = 1.0)
+preds_ridge <- as.vector(predict(model_ridge, X_test_scaled))
+
+# Model B: Random Forest Regressor
+model_rf <- randomForest::randomForest(X_train_scaled, y_train, ntree = 100, maxnodes = 2^4, nodesize = 10)
+preds_rf <- predict(model_rf, X_test_scaled)
+
+# Model C: Support Vector Regressor (SVR)
+model_svr <- e1071::svm(X_train_scaled, y_train, type = "eps-regression", kernel = "radial", cost = 1.0, epsilon = 0.001)
+preds_svr <- predict(model_svr, X_test_scaled)
+
+# ------------------------------------------------------------------------------
+# LightGBM Regressor Implementation
+# ------------------------------------------------------------------------------
+
+# Format matrices into lightgbm's native dataset structure
+dtrain <- lightgbm::lgb.Dataset(data = X_train_scaled, label = y_train)
+
+# Exact hyperparameter tuning params from your original pipeline
+params <- list(
+  objective = "regression", 
+  metric = "rmse", 
+  learning_rate = 0.05, 
+  max_depth = 4
+)
+
+# Train the tree booster model engine
+model_lgb <- lightgbm::lgb.train(params = params, data = dtrain, nrounds = 100, verbose = -1)
+
+# Generate predictions on unseen out-of-sample data
+preds_lgb <- predict(model_lgb, X_test_scaled)
+
+
+# Naive Benchmark baseline
+preds_naive <- rep(0.0, length(y_test))
+
+# Generate Model Leaderboard Evaluation Summary Statistics
+metrics_matrix <- rbind(
+  "LightGBM"                   = calculate_metrics(y_test, preds_lgb),
+  "Support Vector Machine SVR" = calculate_metrics(y_test, preds_svr),
+  "Random Forest (Bagging)"    = calculate_metrics(y_test, preds_rf),
+  "Naive Mean Model"           = calculate_metrics(y_test, preds_naive),
+  "Ridge Regression (Linear)"  = calculate_metrics(y_test, preds_ridge)
+)
+
+# ------------------------------------------------------------------------------
+# Evaluation Visualization: True Out-of-Sample SVR Forecast Tracking
+# ------------------------------------------------------------------------------
+
+# Extract matching evaluation timeline dimensions
+test_dates <- stock_df_expanded$date[(split_idx + 1):nrow(stock_df_expanded)]
+
+# Construct clean data frames utilizing your active mathematical SVR predictions
+# (Multiplied by 100 to explicitly format as true percentages)
+svr_plot_df <- data.frame(
+  date      = test_dates,
+  Actual    = as.numeric(y_test) * 100,
+  Predicted = as.numeric(preds_svr) * 100 # Computed live by your e1071 SVR model
+)
+
+# Render the output as a beautiful table layout directly in the document
+knitr::kable(round(metrics_matrix, 4), caption = "Model Performance Leaderboard Matrix (Scores in %)")
+```
+
+```{r}
+# Render the SVR time-series overlay visualization
+ggplot(svr_plot_df, aes(x = date)) +
+  geom_hline(yintercept = 0, color = "gray", linetype = "dotted", linewidth = 1) +
+  # Actual Returns (Black solid line with round points)
+  geom_line(aes(y = Actual, color = "Actual Daily Return"), linewidth = 0.8) +
+  geom_point(aes(y = Actual, color = "Actual Daily Return"), size = 1.5) +
+  # SVR Predictions (Crimson dot-dash line with triangle points)
+  geom_line(aes(y = Predicted, color = "SVR (RBF Kernel) Predicted Return"), linetype = "dotdash", linewidth = 0.8) +
+  geom_point(aes(y = Predicted, color = "SVR (RBF Kernel) Predicted Return"), shape = 17, size = 1.5) +
+  # Labeling and hex color assignments matching your python configuration
+  labs(
+    title = "Out-of-Sample SVR Forecast Evaluation (Precision Tracking Horizon)",
+    x = "Date Timeline",
+    y = "Daily Return Percentage (%)"
+  ) +
+  scale_color_manual(
+    name = NULL,
+    values = c("Actual Daily Return" = "black", "SVR (RBF Kernel) Predicted Return" = "#DC143C")
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 11, hjust = 0),
+    legend.position = "top",
+    axis.text.x = element_text(angle = 15, vjust = 1, hjust = 1)
+  )
+
+# ------------------------------------------------------------------------------
+# Evaluation Visualization: True Out-of-Sample Daily Forecast Tracking
+# ------------------------------------------------------------------------------
+
+# 1. Dynamically extract the exact test dates
+test_dates <- stock_df_expanded$date[(split_idx + 1):nrow(stock_df_expanded)]
+
+# 2. Extract the exact mathematically computed predictions from your model
+# (We scale both vectors by 100 to display them as percentages)
+plot_df <- data.frame(
+  date      = test_dates,
+  Actual    = as.numeric(y_test) * 100,
+  Predicted = as.numeric(preds_lgb) * 100  # Dynamically generated by LightGB
+)
+
+# 3. Render the true time-series forecasting overlay visualization
+ggplot(plot_df, aes(x = date)) +
+  geom_hline(yintercept = 0, color = "gray", linetype = "dotted", linewidth = 1) +
+  # Actual Returns Line
+  geom_line(aes(y = Actual, color = "Actual Daily Return"), linewidth = 0.8) +
+  geom_point(aes(y = Actual, color = "Actual Daily Return"), size = 1.5) +
+  # Exact Model Predictions Line (No manual data estimation)
+  geom_line(aes(y = Predicted, color = "LightGB Model Predicted Return"), linetype = "dashed", linewidth = 0.8) +
+  geom_point(aes(y = Predicted, color = "LightGB Model Predicted Return"), shape = 15, size = 1.5) +
+  labs(
+    title = "Out-of-Sample LightGB Forecast Evaluation (Next 30 Trading Days)",
+    subtitle = "Generated Dynamically via Production Machine Learning Framework",
+    x = "Date Timeline",
+    y = "Daily Return Percentage (%)"
+  ) +
+  scale_color_manual(
+    name = NULL,
+    values = c("Actual Daily Return" = "black", "LightGB Model Predicted Return" = "darkorange")
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 11, hjust = 0),
+    legend.position = "top",
+    axis.text.x = element_text(angle = 15, vjust = 1, hjust = 1)
+  )
+```
+
+```{r}
+# ------------------------------------------------------------------------------
+# Step 8: LightGBM Feature Importance Analysis
+# ------------------------------------------------------------------------------
+
+# Extract feature tree split gain profiles natively from LightGBM
+tree_imp <- lightgbm::lgb.importance(model_lgb, percentage = TRUE)
+
+# Print data summary report table layout directly in the document
+knitr::kable(tree_imp, digits = 4, caption = "LightGBM Feature Gain Profiles")
+
+# Render a stunning portfolio chart using the exact LightGBM metrics matrix
+ggplot(tree_imp, aes(x = reorder(Feature, Gain), y = Gain)) +
+  geom_bar(stat = "identity", fill = "darkcyan", width = 0.7) +
+  coord_flip() +
+  labs(
+    title = "LightGBM Feature Importance Profile",
+    subtitle = "Calculated via Percentage Gain Allocation Matrix",
+    x = "Model Feature Fields",
+    y = "Relative Feature Gain Score"
+  ) +
+  theme_minimal()
+```

@@ -1,0 +1,20 @@
+project:
+  type: website
+  output-dir: docs
+
+website:
+  title: "Data Science Portfolio"
+  navbar:
+    background: primary
+    left:
+      - text: "Stock Analysis Engine"
+        href: index.qmd
+
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    code-fold: show
+    code-tools: true
+    code-copy: true
