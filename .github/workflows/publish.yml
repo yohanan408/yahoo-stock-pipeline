@@ -30,7 +30,7 @@ jobs:
 
       - name: Install Data Science Dependencies
         run: |
-          Rscript -e "install.packages(c('tidyverse', 'changepoint', 'randomForest', 'e1071', 'glmnet', 'TTR', 'zoo', 'rmarkdown'), dependencies=TRUE)"
+          Rscript -e "install.packages(c('tidyverse', 'changepoint', 'randomForest', 'e1071', 'glmnet', 'TTR', 'zoo', 'rmarkdown', 'xgboost', 'lightgbm'), dependencies=TRUE)"
 
       - name: Render R Markdown directly to Root
         run: |
