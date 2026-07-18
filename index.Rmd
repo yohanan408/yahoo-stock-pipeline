@@ -7,7 +7,7 @@ output: html_document
 
 ## Executive Summary
 
-This end-to-end framework implements structured time-series data cleaning, feature engineering, and a machine learning project to predict daily returns.
+This is an end-to-end framework implements structured time-series data cleaning, feature engineering, and a machine learning project to predict daily returns.
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE, eval = TRUE)
