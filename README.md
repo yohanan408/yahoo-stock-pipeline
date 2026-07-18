@@ -2,7 +2,7 @@
 
 An end-to-end financial time-series pipeline engineered in R. This repository features advanced data preprocessing, feature engineering, and a machine learning model tournament to forecast out-of-sample asset returns.
 
-🚀 **[[View Live Interactive Portfolio Website](https://github.io)](https://yohanan408.github.io/yahoo-stock-pipeline/)**
+🚀 **[(https://github.io)](https://yohanan408.github.io/yahoo-stock-pipeline/)**
 
 ---
 
