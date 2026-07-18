@@ -33,7 +33,7 @@ library(TTR)          # For RSI calculation helper
 library(ggplot2)
 
 # Load raw dataset
-stock_df <- read_csv("C:\\Users\\John\\Downloads\\yahoo_stock.csv")
+stock_df <- read_csv("data/raw/yahoo_stock.csv")
 ```
 
 ```{r}
