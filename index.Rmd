@@ -1,19 +1,22 @@
 ---
-title: "Yahoo Stock Price Prediction Pipeline"
+title: "Yahoo Stock Returns: Time-Series Analysis and Model Benchmarking"
 author: "John Njuguna"
-date: "2026-07-18"
+date: "`r Sys.Date()`"
 output: html_document
 ---
 
 ## Executive Summary
 
-This is an end-to-end framework implements structured time-series data cleaning, feature engineering, and a machine learning project to predict daily returns.
+This report cleans a daily stock-price series (yahoo_stock.csv, November 2015 to November 2020), explores the behaviour of its returns and volatility, and tests whether four models can forecast next-day returns better than a naive baseline that always predicts zero.After removing look-ahead leakage from the rolling-volatility features, none of the models clearly beat the naive baseline. Ridge came out marginally ahead in the rolling test, by a margin consistent with chance.
+
+**Main findings.** (1) Daily returns are negatively skewed, and volatility clusters: large moves tend to follow large moves. (2) After removing look-ahead leakage from the rolling-volatility features, none of the models reliably beat the naive baseline, either on a 30-day hold-out or in a rolling test over many 30-day windows. (3) The results do not show that these features can forecast the direction of daily returns. This is consistent with returns being very hard to predict, while volatility is more predictable. The exact figures are in the sections below.
+
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, eval = TRUE)
+   knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
 ```
 
-## Machine Learning Production Code
+## Analysis Code
 
 ```{r}
          
@@ -27,7 +30,6 @@ knitr::opts_chunk$set(echo = TRUE, eval = TRUE)
 library(tidyverse)    # For data manipulation (dplyr, stringr, readr) and plotting (ggplot2)
 library(changepoint)  # For PELT structural break analysis
 library(lightgbm)     # For LightGBM Regressor
-library(xgboost)      # For XGBoost Regressor
 library(randomForest) # For Random Forest
 library(e1071)        # For Support Vector Regression (SVR)
 library(glmnet)       # For Ridge Regression
@@ -107,30 +109,38 @@ stock_df <- stock_df %>%
 returns_skew <- e1071::skewness(stock_df$daily_return)
 cat(sprintf("Daily Returns Skewness: %.4f\n", returns_skew))
 
-# Visualizing Log Return Distribution (Testing Loss Aversion)
+# Visualizing Distribution of Daily Log Returns
 ggplot(stock_df, aes(x = daily_return)) +
   geom_histogram(aes(y = after_stat(density)), bins = 100, fill = "#DC143C", alpha = 0.7) +
   geom_density(color = "darkred", linewidth = 1) +
   geom_vline(xintercept = mean(stock_df$daily_return, na.rm = TRUE), color = "black", linetype = "dashed", linewidth = 1) +
-  labs(title = "Daily Returns Distribution Profile (Testing Loss Aversion Loss Tails)",
+  labs(title = "Distribution of Daily Log Returns",
        x = "Log Return Value", y = "Frequency (Days)") +
   theme_minimal()
 
-# Volatility Autocorrelation (ACF) - Testing Panic Clustering
-acf(abs(stock_df$daily_return), lag.max = 40, main = "Volatility Autocorrelation (Testing Panic Clustering Waves)")
+# Autocorrelation of Absolute Daily Returns
+acf(abs(stock_df$daily_return), lag.max = 40, main = "Autocorrelation of Absolute Daily Returns")
 
 # Compute rolling structural break variables
 stock_df$rolling_volatility_20 <- zoo::rollapplyr(stock_df$daily_return, width = 20, FUN = sd, fill = NA)
 
 # Structural Breaks detection via PELT algorithm
-signal <- stock_df$daily_return
-pelt_model <- cpt.meanvar(signal, method = "PELT", penalty = "Manual", pen.value = 5, test.stat = "Normal")
-break_indices <- cpts(pelt_model)
-break_dates <- stock_df$date[break_indices]
 
-for(b_date in break_dates) {
-  cat(sprintf("Structural Break Located: %s\n", as.Date(b_date, origin = "1970-01-01")))
-}
+# A manual penalty of 5 over-segments the series: hundreds of "breaks".
+# MBIC scales the penalty with sample size; minseglen stops tiny 1-2 day segments.
+
+signal <- stock_df$daily_return
+
+pelt_low  <- cpt.meanvar(signal, method = "PELT", penalty = "Manual", pen.value = 5,
+                         test.stat = "Normal")
+pelt_mbic <- cpt.meanvar(signal, method = "PELT", penalty = "MBIC",
+                         test.stat = "Normal", minseglen = 20)
+
+cat("Breaks with manual penalty 5:", length(cpts(pelt_low)), "\n")
+cat("Breaks with MBIC + minseglen 20:", length(cpts(pelt_mbic)), "\n")
+
+break_dates <- stock_df$date[cpts(pelt_mbic)]
+print(break_dates)
 
 # Behavioral Context Correlation Heatmap
 stock_df <- stock_df %>% 
@@ -147,7 +157,7 @@ print(round(corr_matrix, 2))
 ggplot(stock_df, aes(x = date, y = rolling_volatility_20)) +
   geom_line(color = "darkorange", linewidth = 0.8) +
   labs(
-    title = "Market Volatility Over Time (Scanning for Structural Breaks / Crisis Shifts)",
+    title = "20-Day Rolling Volatility of Daily Returns",
     x = "Date Timeline",
     y = "Standard Deviation (Risk)"
   ) +
@@ -156,47 +166,56 @@ ggplot(stock_df, aes(x = date, y = rolling_volatility_20)) +
     plot.title = element_text(face = "bold", size = 11),
     legend.position = "top"
   )
+summarise_findings <- function(df, covid_start = as.Date("2020-01-01")) {
+  n    <- nrow(df)
+  skew <- e1071::skewness(df$daily_return)
+  
+  a      <- acf(abs(df$daily_return), lag.max = 40, plot = FALSE)
+  ci     <- qnorm(0.975) / sqrt(n)             # 95% significance bound
+  sig    <- as.numeric(a$acf)[-1] > ci         # lags 1..40
+  first_ns <- which(!sig)[1]                   # first non-significant lag
+  persist  <- if (is.na(first_ns)) 40 else first_ns - 1
+  
+  pre  <- df$rolling_volatility_20[df$date <  covid_start]
+  post <- df$rolling_volatility_20[df$date >= covid_start]
+  base <- mean(pre, na.rm = TRUE)
+  # Guard: return NA instead of -Inf if no (non-missing) data after covid_start
+  peak <- if (all(is.na(post))) NA_real_ else max(post, na.rm = TRUE)
+  
+  list(skew = round(skew, 4),
+       acf_lag1 = round(as.numeric(a$acf)[2], 2),
+       acf_persist_days = persist,
+       baseline_vol = round(base, 4),
+       peak_vol = round(peak, 4),
+       peak_ratio = round(peak / base, 1))
+}
+
 ```
+```{r}
+f <- summarise_findings(stock_df)
+covid_start     <- as.Date("2020-01-01")
+vol_post        <- ifelse(stock_df$date >= covid_start, stock_df$rolling_volatility_20, NA)
+peak_date       <- stock_df$date[which.max(vol_post)]
+n_breaks_manual <- length(cpts(pelt_low))
+n_breaks_mbic   <- length(cpts(pelt_mbic))
+pre_peak      <- round(max(stock_df$rolling_volatility_20[stock_df$date < covid_start], na.rm = TRUE), 4)
+breaks_2020   <- break_dates[break_dates >= as.Date("2020-02-01") & break_dates <= as.Date("2020-04-30")]
+n_breaks_2020 <- length(breaks_2020)
 
-1.  **Distribution of Daily Returns (Testing Loss Aversion)**
-    This analysis evaluates the distribution profile of daily log returns to mathematically verify the presence of investor Loss Aversion.
+break_sentence <- if (n_breaks_2020 > 0) {
+  paste0("The change-point analysis places ", n_breaks_2020, " break(s) between ",
+         format(min(breaks_2020), "%d %B %Y"), " and ", format(max(breaks_2020), "%d %B %Y"),
+         ", around the volatility spike, which supports describing early 2020 as a change in the return-volatility regime.")
+} else {
+  "The change-point analysis does not place a break between February and April 2020, so the 2020 episode is described here as a volatility spike, not as a detected structural break."
+}
+```
+1.  **Distribution of Daily Log Returns** Daily log returns are negatively skewed (skewness = `r f$skew`): the left tail is longer, so large single-day drops are more extreme than comparable rallies. This is a descriptive result. It does not by itself show that investors are loss averse, because skewness can have many causes. For modelling it means that error metrics such as RMSE are dominated by a small number of extreme days.
 
-    Key Statistical Findings:
-    • Daily Returns Skewness: -1.1499
-    • Distribution Category: Highly skewed to the left
-    • Statistical Significance: High (Score is well below Behavioral Interpretation:-1.0)
-    • Asymmetric Investor Behavior: Market panics are sharper than rallies.
-    • Elongated Left Tail: Extreme single-day market drops happen fast.
-    • Truncated Right Tail: Positive market gains are slow and orderly.
-    • Model Requirement: Standard linear models fail due to this asymmetry
+2.  **Autocorrelation of Absolute Daily Returns** The autocorrelation of absolute daily returns is `r f$acf_lag1` at lag 1 and stays above the 95% significance bound for `r f$acf_persist_days` consecutive lags. Large moves tend to be followed by large moves, and quiet periods by quiet periods. This supports using volatility-based features, because volatility is persistent. It does not imply that the direction of returns is predictable.
 
-2.  **Volatility Autocorrelation Function (ACF) – Testing Panic Clustering**
-    This analysis examines the Autocorrelation Function (ACF) applied to the absolute values of daily log returns to mathematically evaluate the presence of Panic Clustering (Volatility Clustering).
+3.  **20-Day Rolling Volatility of Daily Returns** The 20-day rolling standard deviation averaged `r f$baseline_vol` before 2020, and its highest value in that period was `r pre_peak`. It peaked at `r f$peak_vol` on `r peak_date`, about `r f$peak_ratio` times the pre-2020 average, and then decayed gradually. The PELT change-point algorithm, with the MBIC penalty and a 20-day minimum segment, found `r n_breaks_mbic` breaks in the mean and variance of returns. A manual penalty of 5 found `r n_breaks_manual`, which splits the series into very short segments and is not meaningful. `r break_sentence` Because variance changes over time, models that assume constant variance may fit crisis periods poorly, but this report does not test that.
 
-    Key Statistical Findings:
-    • Immediate Correlation (Lag 1): \~0.50 (highly positive and statistically significant).
-    • Persistence Horizon: Vertical bars remain structurally elevated above the blue
-    significance threshold for exactly 27 trading days.
-    • Statistical Significance: High. The extension of the bars beyond the 95% confidence interval (blue-shaded region) up to Lag 27 proves this pattern is a core structural feature.
-
-    Behavioral & Structural Interpretation:
-    • Volatility Clustering Verified: Large price shocks tend to be followed by large price shocks, and calm periods tend to be followed by calm periods.
-    • The 27-Day Market Echo: A severe market panic leaves a lingering "echo" of institutional re-hedging and investor anxiety that takes exactly 5 weeks and 2 days to fully dissipate.
-    • Feature Engineering Justification: This heavy serial dependence mathematically
-    validates the inclusion of explicit historical features such as return_lag_1, return_lag_2, and short-term rolling volatility metrics (rolling_std_5) into our machine learning matrix.
-
-3.  **20-Day Rolling Volatility - Testing Structural Breaks**
-    This analysis evaluates a 20-day rolling standard deviation timeline applied to our stationary daily log returns to identify major macro shocks and Structural Breaks (Regime Shifts).
-
-    Key Statistical Findings:
-    • Historical Baseline (2016–2019): Volatility remained tightly bound within a low variance regime between \~0.005 and 0.015.
-    • The COVID-19 Shock Event (Early 2020): Driven by global pandemic panic, risk spiked vertically to a historic peak of 0.061—representing a massive 6x increase over the historical baseline average.
-    • The Clustering Tail: The slow, non-vertical trailing decay following the main COVID-19 panic wave visually maps our verified 27-day autocorrelation aftershock wave.
-
-    Structural Interpretation & Algorithmic Impact:
-    • Regime Shift Verified: The massive 2020 COVID-19 spike marks a definitive structural break in the time series. The market state transitioned instantly from a quiet baseline into a high-variance crisis regime.
-    • Why Traditional Models Fail Here: Classical models (like standard OLS frameworks) cannot handle this sudden variance explosion. They assume variance is constant (Homoscedasticity), which this graph completely disproves.
-    • Non-Linear Tree Architecture Advantage: Non-linear algorithms (like LightGBM) can utilize these structural spikes as an environmental warning system to dynamically scale predictions across disparate variance boundaries.
 
 ```{r}
 # ------------------------------------------------------------------------------
@@ -210,12 +229,13 @@ stock_df_expanded <- stock_df %>%
     return_lag_4 = lag(daily_return, 4),
     return_lag_5 = lag(daily_return, 5),
     volume_lag_2 = lag(volume, 2),
-    daily_range_lag_1 = lag(daily_return, 1), # Assigned matching python variable
+    daily_range_lag_1 = lag(daily_range, 1), # Assigned matching python variable
     daily_range_lag_2 = lag(daily_range, 2),
     
     # Risk Tracking windows
-    rolling_volatility_5  = zoo::rollapplyr(daily_return, width = 5, FUN = sd, fill = NA),
-    rolling_volatility_60 = zoo::rollapplyr(daily_return, width = 60, FUN = sd, fill = NA)
+    rolling_volatility_5  = lag(zoo::rollapplyr(daily_return, width = 5, FUN = sd, fill = NA), 1),
+    rolling_volatility_20 = lag(zoo::rollapplyr(daily_return, width = 20, FUN = sd, fill = NA), 1),
+    rolling_volatility_60 = lag(zoo::rollapplyr(daily_return, width = 60, FUN = sd, fill = NA), 1)
   )
 
 # RSI 14-day calculation from returns
@@ -226,6 +246,11 @@ stock_df_expanded$rsi_14_lag_1 <- lag(stock_df_expanded$rsi_14, 1)
 # Clear matrix of nested Lookback NaN artifacts
 stock_df_expanded <- stock_df_expanded %>% drop_na()
 ```
+
+
+Feature construction and a leakage fix. Return, volume and range lags are shifted by the number in their name. The rolling-volatility features (5, 20 and 60 days) are shifted by one day, so every feature uses only information available at the end of the previous trading day. An earlier version of this report computed the rolling-volatility features without that shift, so each one included the return being predicted. Fixing this changed the results (see below). Scaling uses training-set minimums and maximums only.
+
+
 
 ```{r}
 # ------------------------------------------------------------------------------
@@ -282,6 +307,8 @@ calculate_metrics <- function(actual, predicted) {
 model_ridge <- glmnet::glmnet(X_train_scaled, y_train, alpha = 0, lambda = 1.0)
 preds_ridge <- as.vector(predict(model_ridge, X_test_scaled))
 
+set.seed(42)
+
 # Model B: Random Forest Regressor
 model_rf <- randomForest::randomForest(X_train_scaled, y_train, ntree = 100, maxnodes = 2^4, nodesize = 10)
 preds_rf <- predict(model_rf, X_test_scaled)
@@ -297,7 +324,7 @@ preds_svr <- predict(model_svr, X_test_scaled)
 # Format matrices into lightgbm's native dataset structure
 dtrain <- lightgbm::lgb.Dataset(data = X_train_scaled, label = y_train)
 
-# Exact hyperparameter tuning params from your original pipeline
+# Fixed hyperparameters, not tuned on the test set
 params <- list(
   objective = "regression", 
   metric = "rmse", 
@@ -320,7 +347,7 @@ metrics_matrix <- rbind(
   "LightGBM"                   = calculate_metrics(y_test, preds_lgb),
   "Support Vector Machine SVR" = calculate_metrics(y_test, preds_svr),
   "Random Forest (Bagging)"    = calculate_metrics(y_test, preds_rf),
-  "Naive Mean Model"           = calculate_metrics(y_test, preds_naive),
+  "Naive zero-return baseline"           = calculate_metrics(y_test, preds_naive),
   "Ridge Regression (Linear)"  = calculate_metrics(y_test, preds_ridge)
 )
 
@@ -339,9 +366,12 @@ svr_plot_df <- data.frame(
   Predicted = as.numeric(preds_svr) * 100 # Computed live by your e1071 SVR model
 )
 
-# Render the output as a beautiful table layout directly in the document
+# Render the output as a layout directly in the document
 knitr::kable(round(metrics_matrix, 4), caption = "Model Performance Leaderboard Matrix (Scores in %)")
 ```
+
+Hold-out result. The last 30 trading days are held out. The naive baseline predicts a zero return every day and scores an RMSE of `r round(metrics_matrix["Naive zero-return baseline", "RMSE"], 4)`. LightGBM scores `r round(metrics_matrix["LightGBM", "RMSE"], 4)`, SVR `r round(metrics_matrix["Support Vector Machine SVR", "RMSE"], 4)`, Random Forest `r round(metrics_matrix["Random Forest (Bagging)", "RMSE"], 4)`
+and Ridge `r round(metrics_matrix["Ridge Regression (Linear)", "RMSE"], 4)`. No model improves on the baseline by a meaningful margin, and with only 30 test days, differences this small are within noise.
 
 ```{r}
 # Render the SVR time-series overlay visualization
@@ -355,7 +385,7 @@ ggplot(svr_plot_df, aes(x = date)) +
   geom_point(aes(y = Predicted, color = "SVR (RBF Kernel) Predicted Return"), shape = 17, size = 1.5) +
   # Labeling and hex color assignments matching your python configuration
   labs(
-    title = "Out-of-Sample SVR Forecast Evaluation (Precision Tracking Horizon)",
+    title = "Out-of-Sample SVR Predictions vs Actual Returns (Last 30 Trading Days)",
     x = "Date Timeline",
     y = "Daily Return Percentage (%)"
   ) +
@@ -382,7 +412,7 @@ test_dates <- stock_df_expanded$date[(split_idx + 1):nrow(stock_df_expanded)]
 plot_df <- data.frame(
   date      = test_dates,
   Actual    = as.numeric(y_test) * 100,
-  Predicted = as.numeric(preds_lgb) * 100  # Dynamically generated by LightGB
+  Predicted = as.numeric(preds_lgb) * 100  # Dynamically generated by LightGBM
 )
 
 # 3. Render the true time-series forecasting overlay visualization
@@ -392,17 +422,16 @@ ggplot(plot_df, aes(x = date)) +
   geom_line(aes(y = Actual, color = "Actual Daily Return"), linewidth = 0.8) +
   geom_point(aes(y = Actual, color = "Actual Daily Return"), size = 1.5) +
   # Exact Model Predictions Line (No manual data estimation)
-  geom_line(aes(y = Predicted, color = "LightGB Model Predicted Return"), linetype = "dashed", linewidth = 0.8) +
-  geom_point(aes(y = Predicted, color = "LightGB Model Predicted Return"), shape = 15, size = 1.5) +
+  geom_line(aes(y = Predicted, color = "LightGBM Model Predicted Return"), linetype = "dashed", linewidth = 0.8) +
+  geom_point(aes(y = Predicted, color = "LightGBM Model Predicted Return"), shape = 15, size = 1.5) +
   labs(
-    title = "Out-of-Sample LightGB Forecast Evaluation (Next 30 Trading Days)",
-    subtitle = "Generated Dynamically via Production Machine Learning Framework",
+    title = "Out-of-Sample LightGBM vs Actual Returns (Last 30 Trading Days)",
     x = "Date Timeline",
     y = "Daily Return Percentage (%)"
   ) +
   scale_color_manual(
     name = NULL,
-    values = c("Actual Daily Return" = "black", "LightGB Model Predicted Return" = "darkorange")
+    values = c("Actual Daily Return" = "black", "LightGBM Model Predicted Return" = "darkorange")
   ) +
   theme_minimal() +
   theme(
@@ -411,6 +440,7 @@ ggplot(plot_df, aes(x = date)) +
     axis.text.x = element_text(angle = 15, vjust = 1, hjust = 1)
   )
 ```
+The predicted returns are shrunk toward zero and vary much less than the actual returns. This is what we expect when the features carry little information about next-day returns, and the regularisation in the models reinforces it. The comparison with the naive baseline, not the shape of the plot, is what shows that the models have no reliable forecasting skill.
 
 ```{r}
 # ------------------------------------------------------------------------------
@@ -423,15 +453,112 @@ tree_imp <- lightgbm::lgb.importance(model_lgb, percentage = TRUE)
 # Print data summary report table layout directly in the document
 knitr::kable(tree_imp, digits = 4, caption = "LightGBM Feature Gain Profiles")
 
-# Render a stunning portfolio chart using the exact LightGBM metrics matrix
 ggplot(tree_imp, aes(x = reorder(Feature, Gain), y = Gain)) +
   geom_bar(stat = "identity", fill = "darkcyan", width = 0.7) +
   coord_flip() +
   labs(
-    title = "LightGBM Feature Importance Profile",
-    subtitle = "Calculated via Percentage Gain Allocation Matrix",
+    title = "LightGBM Feature Importance (Share of Total Gain)",
+    subtitle = "Describes the fitted model, not evidence of predictive power",
     x = "Model Feature Fields",
     y = "Relative Feature Gain Score"
   ) +
   theme_minimal()
 ```
+Gain shows how the LightGBM model used each feature while fitting the training data. It does not show that any feature predicts returns, because the model did not beat the baseline out of sample. Treat this as a description of the model, not as a finding about the market. Gain is spread fairly evenly across all features, which is consistent with no feature carrying a strong signal.
+```{r}
+# One 30-day test window is too small to judge. This repeats the test over many
+# consecutive windows, scaling with training data only each time.
+rolling_origin_rmse <- function(X, y, fit_predict, first_train = NULL, horizon = 30) {
+  X <- as.matrix(X)
+  n <- nrow(X)
+  if (is.null(first_train)) first_train <- floor(n / 2)
+  if (first_train > n - horizon) stop("Not enough rows: lower first_train or horizon.")
+  starts <- seq(first_train, n - horizon, by = horizon)
+  sapply(starts, function(s) {
+    tr <- 1:s
+    te <- (s + 1):(s + horizon)
+    mins <- apply(X[tr, , drop = FALSE], 2, min)
+    rng  <- apply(X[tr, , drop = FALSE], 2, max) - mins
+    rng[rng == 0] <- 1
+    Xtr <- scale(X[tr, , drop = FALSE], center = mins, scale = rng)
+    Xte <- scale(X[te, , drop = FALSE], center = mins, scale = rng)
+    p <- fit_predict(as.matrix(Xtr), y[tr], as.matrix(Xte))
+    sqrt(mean((y[te] - p)^2)) * 100
+  })
+}
+
+naive_fp <- function(Xtr, ytr, Xte) rep(0, nrow(Xte))
+
+svr_fp <- function(Xtr, ytr, Xte) {
+  predict(e1071::svm(Xtr, ytr, type = "eps-regression", kernel = "radial",
+                     cost = 1.0, epsilon = 0.001), Xte)
+}
+
+# Plug LightGBM in the same way:
+lgb_fp <- function(Xtr, ytr, Xte) {
+   m <- lightgbm::lgb.train(
+     params = list(objective = "regression", metric = "rmse",
+                   learning_rate = 0.05, max_depth = 4),
+     data = lightgbm::lgb.Dataset(Xtr, label = ytr), nrounds = 100, verbose = -1)
+   predict(m, Xte)
+}
+
+ridge_fp <- function(Xtr, ytr, Xte) {
+  m <- glmnet::glmnet(Xtr, ytr, alpha = 0, lambda = 1.0)
+  as.vector(predict(m, Xte))
+}
+rf_fp <- function(Xtr, ytr, Xte) {
+  set.seed(42)
+  predict(randomForest::randomForest(Xtr, ytr, ntree = 100, maxnodes = 2^4, nodesize = 10), Xte)
+}
+
+compare_to_naive <- function(X, y, models) {
+  naive <- rolling_origin_rmse(X, y, naive_fp)
+  out <- lapply(names(models), function(nm) {
+    r <- rolling_origin_rmse(X, y, models[[nm]])
+    data.frame(model = nm,
+               windows = length(r),
+               mean_rmse = round(mean(r), 4),
+               naive_rmse = round(mean(naive), 4),
+               windows_beating_naive = sum(r < naive))
+  })
+  do.call(rbind, out)
+}
+
+# Usage after your feature matrix is built (X = stock_df_expanded[expanded_features],
+# y = stock_df_expanded$daily_return):
+#   compare_to_naive(X, y, list(SVR = svr_fp))        # add LightGBM as lgb_fp
+# If a model beats the naive baseline in only about half the windows, say so:
+# that is the honest result, and it's a strong thing to explain in an interview.
+```
+
+```{r}
+    rolling_tbl <- compare_to_naive(X, y, list(SVR = svr_fp, Ridge = ridge_fp,
+                                           RandomForest = rf_fp, LightGBM = lgb_fp))
+    svr_row <- rolling_tbl[rolling_tbl$model == "SVR", ]
+    lgb_row <- rolling_tbl[rolling_tbl$model == "LightGBM", ]
+    rdge_row <- rolling_tbl[rolling_tbl$model == "Ridge", ]
+    rf_row <- rolling_tbl[rolling_tbl$model == "RandomForest", ]
+    knitr::kable(rolling_tbl, caption = "Rolling-origin comparison with the naive baseline (RMSE in %)")
+```
+
+```{r}
+  best <- rolling_tbl[which.max(rolling_tbl$windows_beating_naive), ]
+  p_chance <- round(pbinom(best$windows_beating_naive - 1, best$windows, 0.5, lower.tail = FALSE), 2)
+```
+
+The naive baseline’s mean RMSE is `r rolling_tbl$naive_rmse[1]` over `r rolling_tbl$windows[1]` windows. The best model by wins, `r best$model`, beat it in `r best$windows_beating_naive` of `r best$windows` windows, with a mean RMSE of `r best$mean_rmse`. A record this good would occur by chance about `r p_chance*100`% of the time if there were no real skill, so this is not evidence of forecasting ability.
+
+
+## Limitations and next steps
+
+**Limitations**
+- One price series from November 2015 to November 2020, which includes the 2020 crisis. Results may not hold for other periods or assets.
+  - A single 30-day hold-out and `r svr_row$windows` rolling windows are small samples, so small differences are noise.
+  - The features are limited to lagged returns, volume, range, rolling volatility and RSI.
+  - No transaction costs or trading rules are modelled. This is a forecasting test, not a trading strategy.
+  - Interpretations such as loss aversion or panic are hypotheses that this analysis does not test.
+
+**Next steps**
+
+Volatility is persistent (section 2 above) while returns are not predictable here. A more promising target is next-day volatility, compared against a naive baseline of yesterday’s volatility, using the same lagged features.
