@@ -7,9 +7,9 @@ output: html_document
 
 ## Executive Summary
 
-This report cleans a daily stock-price series (yahoo_stock.csv, November 2015 to November 2020), explores the behaviour of its returns and volatility, and tests whether four models can forecast next-day returns better than a naive baseline that always predicts zero.After removing look-ahead leakage from the rolling-volatility features, none of the models clearly beat the naive baseline. Ridge came out marginally ahead in the rolling test, by a margin consistent with chance.
+This report cleans a daily stock-price series (yahoo_stock.csv, November 2015 to November 2020), explores the behaviour of its returns and volatility, and tests whether four models can forecast next-day returns better than a naive baseline that always predicts zero.
 
-**Main findings.** (1) Daily returns are negatively skewed, and volatility clusters: large moves tend to follow large moves. (2) After removing look-ahead leakage from the rolling-volatility features, none of the models reliably beat the naive baseline, either on a 30-day hold-out or in a rolling test over many 30-day windows. (3) The results do not show that these features can forecast the direction of daily returns. This is consistent with returns being very hard to predict, while volatility is more predictable. The exact figures are in the sections below.
+**Main findings.** (1) Daily returns are negatively skewed, and volatility clusters: large moves tend to follow large moves. (2) After removing look-ahead leakage from the rolling-volatility features, none of the models clearly beat the naive baseline; Ridge was marginally ahead in the rolling test, by a margin consistent with chance.(3) The results do not show that these features can forecast the direction of daily returns. This is consistent with returns being very hard to predict, while volatility is more predictable. The exact figures are in the sections below.
 
 
 ```{r setup, include=FALSE}
@@ -212,7 +212,7 @@ break_sentence <- if (n_breaks_2020 > 0) {
 ```
 1.  **Distribution of Daily Log Returns** Daily log returns are negatively skewed (skewness = `r f$skew`): the left tail is longer, so large single-day drops are more extreme than comparable rallies. This is a descriptive result. It does not by itself show that investors are loss averse, because skewness can have many causes. For modelling it means that error metrics such as RMSE are dominated by a small number of extreme days.
 
-2.  **Autocorrelation of Absolute Daily Returns** The autocorrelation of absolute daily returns is `r f$acf_lag1` at lag 1 and stays above the 95% significance bound for `r f$acf_persist_days` consecutive lags. Large moves tend to be followed by large moves, and quiet periods by quiet periods. This supports using volatility-based features, because volatility is persistent. It does not imply that the direction of returns is predictable.
+2.  **Autocorrelation of Absolute Daily Returns** The autocorrelation of absolute daily returns is `r f$acf_lag1` at lag 1 and stays above the 95% significance bound at every one of the `r f$acf_persist_days` lags tested. Large moves tend to be followed by large moves, and quiet periods by quiet periods. This supports using volatility-based features, because volatility is persistent. It does not imply that the direction of returns is predictable.
 
 3.  **20-Day Rolling Volatility of Daily Returns** The 20-day rolling standard deviation averaged `r f$baseline_vol` before 2020, and its highest value in that period was `r pre_peak`. It peaked at `r f$peak_vol` on `r peak_date`, about `r f$peak_ratio` times the pre-2020 average, and then decayed gradually. The PELT change-point algorithm, with the MBIC penalty and a 20-day minimum segment, found `r n_breaks_mbic` breaks in the mean and variance of returns. A manual penalty of 5 found `r n_breaks_manual`, which splits the series into very short segments and is not meaningful. `r break_sentence` Because variance changes over time, models that assume constant variance may fit crisis periods poorly, but this report does not test that.
 
@@ -440,6 +440,7 @@ ggplot(plot_df, aes(x = date)) +
     axis.text.x = element_text(angle = 15, vjust = 1, hjust = 1)
   )
 ```
+
 The predicted returns are shrunk toward zero and vary much less than the actual returns. This is what we expect when the features carry little information about next-day returns, and the regularisation in the models reinforces it. The comparison with the naive baseline, not the shape of the plot, is what shows that the models have no reliable forecasting skill.
 
 ```{r}
@@ -464,6 +465,7 @@ ggplot(tree_imp, aes(x = reorder(Feature, Gain), y = Gain)) +
   ) +
   theme_minimal()
 ```
+
 Gain shows how the LightGBM model used each feature while fitting the training data. It does not show that any feature predicts returns, because the model did not beat the baseline out of sample. Treat this as a description of the model, not as a finding about the market. Gain is spread fairly evenly across all features, which is consistent with no feature carrying a strong signal.
 ```{r}
 # One 30-day test window is too small to judge. This repeats the test over many
@@ -547,12 +549,15 @@ compare_to_naive <- function(X, y, models) {
   p_chance <- round(pbinom(best$windows_beating_naive - 1, best$windows, 0.5, lower.tail = FALSE), 2)
 ```
 
+**To test whether the 30-day result holds up, the models were re-evaluated over 20 consecutive 30-day windows.**
+
 The naive baseline’s mean RMSE is `r rolling_tbl$naive_rmse[1]` over `r rolling_tbl$windows[1]` windows. The best model by wins, `r best$model`, beat it in `r best$windows_beating_naive` of `r best$windows` windows, with a mean RMSE of `r best$mean_rmse`. A record this good would occur by chance about `r p_chance*100`% of the time if there were no real skill, so this is not evidence of forecasting ability.
 
 
 ## Limitations and next steps
 
 **Limitations**
+
 - One price series from November 2015 to November 2020, which includes the 2020 crisis. Results may not hold for other periods or assets.
   - A single 30-day hold-out and `r svr_row$windows` rolling windows are small samples, so small differences are noise.
   - The features are limited to lagged returns, volume, range, rolling volatility and RSI.
