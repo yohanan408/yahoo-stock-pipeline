@@ -20,7 +20,7 @@ This report cleans a daily stock-price series (yahoo_stock.csv, November 2015 to
    knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
 ```
 
-## Analysis Code
+## Analysis
 
 ```{r}
          
@@ -553,6 +553,7 @@ compare_to_naive <- function(X, y, models) {
   p_chance <- round(pbinom(best$windows_beating_naive - 1, best$windows, 0.5, lower.tail = FALSE), 2)
 ```
 
+
 **To test whether the 30-day result holds up, the models were re-evaluated over 20 consecutive 30-day windows.**
 
 The naive baseline’s mean RMSE is `r rolling_tbl$naive_rmse[1]` over `r rolling_tbl$windows[1]` windows. The best model by wins, `r best$model`, beat it in `r best$windows_beating_naive` of `r best$windows` windows, with a mean RMSE of `r best$mean_rmse`. A record this good would occur by chance about `r p_chance*100`% of the time if there were no real skill, so this is not evidence of forecasting ability.
@@ -563,10 +564,10 @@ The naive baseline’s mean RMSE is `r rolling_tbl$naive_rmse[1]` over `r rollin
 **Limitations**
 
 - One price series from November 2015 to November 2020, which includes the 2020 crisis. Results may not hold for other periods or assets.
-  - A single 30-day hold-out and `r svr_row$windows` rolling windows are small samples, so small differences are noise.
-  - The features are limited to lagged returns, volume, range, rolling volatility and RSI.
-  - No transaction costs or trading rules are modelled. This is a forecasting test, not a trading strategy.
-  - Interpretations such as loss aversion or panic are hypotheses that this analysis does not test.
+- A single 30-day hold-out and `r svr_row$windows` rolling windows are small samples, so small differences are noise.
+- The features are limited to lagged returns, volume, range, rolling volatility and RSI.
+- No transaction costs or trading rules are modelled. This is a forecasting test, not a trading strategy.
+- Interpretations such as loss aversion or panic are hypotheses that this analysis does not test.
 
 **Next steps**
 
