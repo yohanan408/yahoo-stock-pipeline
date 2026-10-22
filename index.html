@@ -1591,8 +1591,8 @@ direction of daily returns. This is consistent with returns being very
 hard to predict, while volatility is more predictable. The exact figures
 are in the sections below.</p>
 </div>
-<div id="analysis-code" class="section level2">
-<h2>Analysis Code</h2>
+<div id="analysis" class="section level2">
+<h2>Analysis</h2>
 <pre class="r"><code># ==============================================================================
 # Yahoo Stock Price Prediction Pipeline (R Translation)
 # ==============================================================================
@@ -2339,8 +2339,7 @@ ability.</p>
 <p><strong>Limitations</strong></p>
 <ul>
 <li>One price series from November 2015 to November 2020, which includes
-the 2020 crisis. Results may not hold for other periods or assets.
-<ul>
+the 2020 crisis. Results may not hold for other periods or assets.</li>
 <li>A single 30-day hold-out and 20 rolling windows are small samples,
 so small differences are noise.</li>
 <li>The features are limited to lagged returns, volume, range, rolling
@@ -2349,7 +2348,6 @@ volatility and RSI.</li>
 forecasting test, not a trading strategy.</li>
 <li>Interpretations such as loss aversion or panic are hypotheses that
 this analysis does not test.</li>
-</ul></li>
 </ul>
 <p><strong>Next steps</strong></p>
 <p>Volatility is persistent (section 2 above) while returns are not
